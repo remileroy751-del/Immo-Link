@@ -51,6 +51,10 @@ CinetPay doit être activé/configuré pour le compte marchand ImmoLink. Les not
 Le fichier `app/google-services.json` est déjà inclus et correspond au package `com.immolink.appname`.
 
 ## Compilation APK
-Le workflow `.github/workflows/build-apk.yml` utilise Gradle 9.6 et produit un APK debug dans les artifacts GitHub Actions.
+Le workflow `.github/workflows/build-apk.yml` utilise Gradle 9.6.1 et produit un APK debug dans les artifacts GitHub Actions.
 
 Pour une version release signée, ajouter ultérieurement un keystore Android et les secrets GitHub correspondants.
+
+
+### Correctif CI GitHub Actions
+Le workflow utilise Gradle **9.6.1** avec `gradle/actions/setup-gradle@v4`. Le rapport de CI indiquait que la valeur `9.6` n'était pas acceptée par l'action ; une version exacte est maintenant fournie. Gradle 9.6.1 est une version officielle de Gradle.
