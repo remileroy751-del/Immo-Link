@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "941695126186",
+    "project_id": "immolink-a5328",
+    "storage_bucket": "immolink-a5328.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:941695126186:android:1fb0d54c3254a338551ed3",
+        "android_client_info": {
+          "package_name": "com.immolink.appname"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCGtkVSqDR3dG10nV2zCEdCfDVUkOc1voM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
