@@ -179,7 +179,7 @@ fun AuthFlow() {
             }
             PhoneField(code, phone) { phone = it }
             PasswordField(password) { password = it }
-            Button(doLogin, Modifier.fillMaxWidth().height(54.dp), enabled = country.isNotBlank() && phone.length >= 6 && validPassword(password) && !busy) {
+            Button({ doLogin() }, Modifier.fillMaxWidth().height(54.dp), enabled = country.isNotBlank() && phone.length >= 6 && validPassword(password) && !busy) {
                 if (busy) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp)) else Text("Se connecter")
             }
             TextButton({ login = false }) { Text("Créer un compte") }
