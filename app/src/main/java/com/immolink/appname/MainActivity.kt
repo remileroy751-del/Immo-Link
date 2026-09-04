@@ -96,20 +96,47 @@ class MainActivity : ComponentActivity() {
 @Composable fun PasswordField(value: String, onChange: (String) -> Unit) = OutlinedTextField(value, { onChange(it.filter(Char::isLetterOrDigit).take(6)) }, label = { Text("Mot de passe") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true)
 
 @Composable fun AppShell(uid: String, logout: () -> Unit) {
-    val repo = remember { FirebaseRepository() }; var profile by remember { mutableStateOf<UserProfile?>(null) }; var agency by remember { mutableStateOf<Agency?>(null) }; var tab by remember { mutableStateOf("rent") }; var screen by remember { mutableStateOf("home") }; var selected by remember { mutableStateOf<Listing?>(null) }; var publishMode by remember { mutableStateOf("") }; var ownerUid by remember { mutableStateOf("") }
+    val repo = remember { FirebaseRepository() }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var profile by remember { mutableStateOf<UserProfile?>(null) }
+    var agency by remember { mutableStateOf<Agency?>(null) }
+    var tab by remember { mutableStateOf("rent") }
+    var screen by remember { mutableStateOf("home") }
+    var selected by remember { mutableStateOf<Listing?>(null) }
+    var publishMode by remember { mutableStateOf("") }
+    var ownerUid by remember { mutableStateOf("") }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
-    LaunchedEffect(uid) { profile = repo.getProfile(uid); agency = repo.getAgency(uid); if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(LocalContext.current, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS); runCatching { FirebaseMessaging.getInstance().token.await().let { FirebaseFirestore.getInstance().collection("users").document(uid).update("fcmToken", it) } } }
+    LaunchedEffect(uid) {
+        profile = repo.getProfile(uid)
+        agency = repo.getAgency(uid)
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        runCatching {
+            FirebaseMessaging.getInstance().token.await().let {
+                FirebaseFirestore.getInstance().collection("users").document(uid).update("fcmToken", it)
+            }
+        }
+    }
     if (profile == null) return Box(Modifier.fillMaxSize(), Alignment.Center) { CircularProgressIndicator() }
     val p = profile!!
     when (screen) {
         "detail" -> ListingDetail(uid, selected!!, repo, { screen = "home" }, { ownerUid = selected!!.ownerId; screen = "owner" }, { screen = "chat" })
         "search" -> SearchScreen(uid, p, repo) { selected = it; screen = "detail" }
-        "publish" -> PublishScreen(uid, p, repo, publishMode) { publishMode = ""; agency = repo.getAgency(uid); screen = "home" }
+        "publish" -> PublishScreen(uid, p, repo, publishMode) {
+            publishMode = ""
+            scope.launch { agency = repo.getAgency(uid); screen = "home" }
+        }
         "profile" -> ProfileScreen(uid, p, agency, repo, logout, { publishMode = "sale"; screen = "publish" }, { publishMode = "rent"; screen = "publish" }, { screen = "agencyCreate" }, { screen = "myListings" }, { screen = "certification" }, { screen = "agency" })
-        "agencyCreate" -> AgencyCreateScreen(uid, p, repo) { agency = repo.getAgency(uid); screen = "profile" }
+        "agencyCreate" -> AgencyCreateScreen(uid, p, repo) {
+            scope.launch { agency = repo.getAgency(uid); screen = "profile" }
+        }
         "agency" -> AgencyScreen(uid, p, repo) { screen = "profile" }
         "myListings" -> MyListingsScreen(uid, repo) { screen = "home" }
-        "certification" -> CertificationScreen(uid, p, agency, repo) { agency = repo.getAgency(uid); screen = "profile" }
+        "certification" -> CertificationScreen(uid, p, agency, repo) {
+            scope.launch { agency = repo.getAgency(uid); screen = "profile" }
+        }
         "owner" -> OwnerProfileScreen(ownerUid, repo) { screen = "detail" }
         "chats" -> ChatsScreen(uid, repo) { selected = it; screen = "chat" }
         "chat" -> ChatDetailScreen(uid, selected!!, repo) { screen = "chats" }
@@ -136,14 +163,213 @@ class MainActivity : ComponentActivity() {
     Column(Modifier.fillMaxSize().background(Light).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text("Recherche avancée", fontSize = 27.sp, fontWeight = FontWeight.Bold, color = Navy); Text("Les résultats sont automatiquement limités à ${p.country}.", color = Color.Gray); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { FilterChip(mode == "rent", { mode = "rent"; type = ""; budget = null }, { Text("À louer") }); FilterChip(mode == "sale", { mode = "sale"; type = ""; budget = null }, { Text("À vendre") }); FilterChip(mode == "bail", { mode = "bail"; type = ""; budget = null }, { Text("À bailler") }) }; if (mode != "bail") DropdownField(type.ifBlank { "Type de bien" }, if (mode == "rent") Data.rentTypes else Data.saleTypes) { type = it }; DropdownField(city.ifBlank { "Toutes les villes" }, listOf("Toutes les villes") + (Data.cities[p.country] ?: emptyList())) { city = if (it == "Toutes les villes") "" else it }; if (mode != "bail") DropdownField(budget?.label ?: "Votre budget", budgets.map { it.label }) { budget = budgets.first { b -> b.label == it } }; Button({ scope.launch { busy = true; results = repo.searchListings(uid, SearchCriteria(mode, type, city, budget?.min ?: 0, budget?.max)); busy = false } }, Modifier.fillMaxWidth()) { Text("Rechercher") }; OutlinedButton({ scope.launch { repo.saveSearch(SearchCriteria(mode, type, city, budget?.min ?: 0, budget?.max), p.country, uid); saved = true } }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Notifications, null); Spacer(Modifier.width(8.dp)); Text(if (saved) "Recherche enregistrée" else "M’avertir des nouvelles annonces") }; if (busy) CircularProgressIndicator(); results.forEach { ListingCard(it, open) } }
 }
 
-@Composable fun ListingDetail(uid: String, item: Listing, repo: FirebaseRepository, back: () -> Unit, owner: () -> Unit, openChat: () -> Unit) {
-    val context = LocalContext.current; var favorite by remember { mutableStateOf(false) }; var report by remember { mutableStateOf(false) }; var reason by remember { mutableStateOf("") }; val scope = rememberCoroutineScope()
-    LaunchedEffect(item.id) { favorite = repo.isFavorite(uid, item.id); repo.incrementViews(item.id) }
-    Scaffold(topBar = { TopAppBar(title = { Text(item.propertyType) }, navigationIcon = { IconButton(back) { Icon(Icons.Default.ArrowBack, null) } }, actions = { IconButton({ favorite = !favorite; scope.launch { repo.toggleFavorite(uid, item.id, item.country) } }) { Icon(if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null, tint = Orange) } }) }) { pad -> Column(Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).background(Light)) {
-        if (item.photoUrls.isNotEmpty()) LazyRowPhotos(item.photoUrls) else Box(Modifier.fillMaxWidth().height(220.dp).background(Navy), Alignment.Center) { Icon(Icons.Default.Home, null, tint = Color.White, modifier = Modifier.size(80.dp)) }
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) { AssistChip({ }, label = { Text("En ligne") }); Text(item.propertyType, fontSize = 25.sp, fontWeight = FontWeight.Bold, color = Navy); Text("${item.city}, ${item.country}"); Text(money(item.price), fontSize = 23.sp, color = Orange, fontWeight = FontWeight.Bold); if (item.depositMonths > 0) Text("Caution : ${item.depositMonths} mois"); if (item.description.isNotBlank()) Text(item.description); Text("Publié par ${item.ownerName}", fontWeight = FontWeight.SemiBold); if (item.ownerAgencyName.isNotBlank()) { Text(if (item.agencyCertified) "✓ ${item.ownerAgencyName} — Agence certifiée" else "Agence : ${item.ownerAgencyName}", color = if (item.agencyCertified) Orange else Navy, fontWeight = FontWeight.Bold) }; Text("Vues : ${item.views}", color = Color.Gray); OutlinedButton(owner, Modifier.fillMaxWidth()) { Icon(Icons.Default.Person, null); Spacer(Modifier.width(6.dp)); Text("Voir le profil") }; Button({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(wa(item.ownerCountryCode, item.ownerPhone)))) }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Phone, null); Spacer(Modifier.width(6.dp)); Text("Contacter sur WhatsApp") }; Button({ val chatId = listOf(uid, item.ownerId).sorted().joinToString("_") + "_${item.id}"; scope.launch { repo.sendMessage(chatId, item.id, item.country, listOf(uid, item.ownerId), uid, "Bonjour, votre annonce m'intéresse.") }; openChat() } }, Modifier.fillMaxWidth()) { Icon(Icons.Default.Chat, null); Spacer(Modifier.width(6.dp)); Text("Démarrer une discussion") }; TextButton({ report = true }) { Icon(Icons.Default.Flag, null); Spacer(Modifier.width(4.dp)); Text("Signaler cette annonce") } }
-    } }
-    if (report) AlertDialog(onDismissRequest = { report = false }, title = { Text("Signaler l’annonce") }, text = { OutlinedTextField(reason, { reason = it }, label = { Text("Raison") }, modifier = Modifier.fillMaxWidth()) }, confirmButton = { TextButton({ report = false; scope.launch { repo.reportListing(item.id, reason) } }) { Text("Envoyer") } }, dismissButton = { TextButton({ report = false }) { Text("Annuler") } })
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ListingDetail(
+    uid: String,
+    item: Listing,
+    repo: FirebaseRepository,
+    back: () -> Unit,
+    owner: () -> Unit,
+    openChat: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var favorite by remember { mutableStateOf(false) }
+    var report by remember { mutableStateOf(false) }
+    var reason by remember { mutableStateOf("") }
+
+    LaunchedEffect(item.id) {
+        favorite = repo.isFavorite(uid, item.id)
+        repo.incrementViews(item.id)
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(item.propertyType) },
+                navigationIcon = {
+                    IconButton(onClick = back) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Retour")
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = {
+                            favorite = !favorite
+                            scope.launch {
+                                repo.toggleFavorite(uid, item.id, item.country)
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = if (favorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = "Favori",
+                            tint = Orange
+                        )
+                    }
+                }
+            )
+        }
+    ) { pad ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(pad)
+                .verticalScroll(rememberScrollState())
+                .background(Light)
+        ) {
+            if (item.photoUrls.isNotEmpty()) {
+                LazyRowPhotos(item.photoUrls)
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .background(Navy),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Home,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(80.dp)
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                AssistChip(
+                    onClick = {},
+                    label = { Text("En ligne") }
+                )
+                Text(
+                    item.propertyType,
+                    fontSize = 25.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Navy
+                )
+                Text("${item.city}, ${item.country}")
+                Text(
+                    money(item.price),
+                    fontSize = 23.sp,
+                    color = Orange,
+                    fontWeight = FontWeight.Bold
+                )
+                if (item.depositMonths > 0) {
+                    Text("Caution : ${item.depositMonths} mois")
+                }
+                if (item.description.isNotBlank()) {
+                    Text(item.description)
+                }
+                Text("Publié par ${item.ownerName}", fontWeight = FontWeight.SemiBold)
+
+                if (item.ownerAgencyName.isNotBlank()) {
+                    Text(
+                        text = if (item.agencyCertified) {
+                            "✓ ${item.ownerAgencyName} — Agence certifiée"
+                        } else {
+                            "Agence : ${item.ownerAgencyName}"
+                        },
+                        color = if (item.agencyCertified) Orange else Navy,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Text("Vues : ${item.views}", color = Color.Gray)
+
+                OutlinedButton(
+                    onClick = owner,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Person, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Voir le profil")
+                }
+
+                Button(
+                    onClick = {
+                        context.startActivity(
+                            Intent(
+                                Intent.ACTION_VIEW,
+                                Uri.parse(wa(item.ownerCountryCode, item.ownerPhone))
+                            )
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Phone, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Contacter sur WhatsApp")
+                }
+
+                Button(
+                    onClick = {
+                        val chatId = listOf(uid, item.ownerId)
+                            .sorted()
+                            .joinToString("_") + "_${item.id}"
+                        scope.launch {
+                            repo.sendMessage(
+                                chatId,
+                                item.id,
+                                item.country,
+                                listOf(uid, item.ownerId),
+                                uid,
+                                "Bonjour, votre annonce m'intéresse."
+                            )
+                        }
+                        openChat()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Chat, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Démarrer une discussion")
+                }
+
+                TextButton(onClick = { report = true }) {
+                    Icon(Icons.Default.Flag, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Signaler cette annonce")
+                }
+            }
+        }
+    }
+
+    if (report) {
+        AlertDialog(
+            onDismissRequest = { report = false },
+            title = { Text("Signaler l’annonce") },
+            text = {
+                OutlinedTextField(
+                    value = reason,
+                    onValueChange = { reason = it },
+                    label = { Text("Raison") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        report = false
+                        if (reason.isNotBlank()) {
+                            scope.launch { repo.reportListing(item.id, reason.trim()) }
+                        }
+                    }
+                ) {
+                    Text("Envoyer")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { report = false }) {
+                    Text("Annuler")
+                }
+            }
+        )
+    }
 }
 
 @Composable fun LazyRowPhotos(urls: List<String>) = LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(8.dp)) { itemsIndexed(urls.take(4)) { _, u -> AsyncImage(u, null, Modifier.size(270.dp).clip(RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop) } }
@@ -154,7 +380,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable fun ProfileScreen(uid: String, p: UserProfile, agency: Agency?, repo: FirebaseRepository, logout: () -> Unit, sell: () -> Unit, rent: () -> Unit, createAgency: () -> Unit, myListings: () -> Unit, cert: () -> Unit, agencyPage: () -> Unit) {
-    val context = LocalContext.current; val scope = rememberCoroutineScope(); var showDelete by remember { mutableStateOf(false) }; Column(Modifier.fillMaxSize().background(Light).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text("Mon profil", fontSize = 27.sp, fontWeight = FontWeight.Bold, color = Navy); Surface(RoundedCornerShape(18.dp), color = Color.White) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) { Text(p.firstName, fontSize = 22.sp, fontWeight = FontWeight.Bold); Text(p.phone); Text("${p.city}, ${p.country}"); if (agency != null) { Text(agency.name, color = Navy, fontWeight = FontWeight.Bold); if (agency.badgeActive()) Text("✓ Agence certifiée", color = Orange, fontWeight = FontWeight.Bold); Text("Quota : ${agency.quota()} annonces") } else Text("Quota : 3 annonces") } }; Button(sell, Modifier.fillMaxWidth()) { Icon(Icons.Default.Sell, null); Spacer(Modifier.width(6.dp)); Text("Je veux vendre un bien") }; Button(rent, Modifier.fillMaxWidth()) { Icon(Icons.Default.Key, null); Spacer(Modifier.width(6.dp)); Text("Je veux mettre en location un bien") }; Button(myListings, Modifier.fillMaxWidth()) { Icon(Icons.Default.List, null); Spacer(Modifier.width(6.dp)); Text("Voir mes annonces") }; Button({ createAgency() }, Modifier.fillMaxWidth(), enabled = agency == null) { Icon(Icons.Default.Business, null); Spacer(Modifier.width(6.dp)); Text(if (agency == null) "Créer mon agence immobilière" else "Agence créée") }; if (agency != null) { OutlinedButton(agencyPage, Modifier.fillMaxWidth()) { Text("Voir ma page agence") }; OutlinedButton(cert, Modifier.fillMaxWidth()) { Icon(Icons.Default.Verified, null); Spacer(Modifier.width(6.dp)); Text("Certification de l’agence") }; if (!agency.extraSlotsPaid) OutlinedButton({ scope.launch { val url = repo.createPayment("agency_extra_slots"); context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } }, Modifier.fillMaxWidth()) { Text("Débloquer 10 annonces supplémentaires — 5 000 FCFA") } }; HorizontalDivider(); OutlinedButton(logout, Modifier.fillMaxWidth()) { Text("Déconnexion") }; TextButton({ showDelete = true }) { Text("Supprimer mon compte", color = MaterialTheme.colorScheme.error) } }
+    val context = LocalContext.current; val scope = rememberCoroutineScope(); var showDelete by remember { mutableStateOf(false) }; Column(Modifier.fillMaxSize().background(Light).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text("Mon profil", fontSize = 27.sp, fontWeight = FontWeight.Bold, color = Navy); Surface(shape = RoundedCornerShape(18.dp), color = Color.White) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) { Text(p.firstName, fontSize = 22.sp, fontWeight = FontWeight.Bold); Text(p.phone); Text("${p.city}, ${p.country}"); if (agency != null) { Text(agency.name, color = Navy, fontWeight = FontWeight.Bold); if (agency.badgeActive()) Text("✓ Agence certifiée", color = Orange, fontWeight = FontWeight.Bold); Text("Quota : ${agency.quota()} annonces") } else Text("Quota : 3 annonces") } }; Button(sell, Modifier.fillMaxWidth()) { Icon(Icons.Default.Sell, null); Spacer(Modifier.width(6.dp)); Text("Je veux vendre un bien") }; Button(rent, Modifier.fillMaxWidth()) { Icon(Icons.Default.Key, null); Spacer(Modifier.width(6.dp)); Text("Je veux mettre en location un bien") }; Button(myListings, Modifier.fillMaxWidth()) { Icon(Icons.Default.List, null); Spacer(Modifier.width(6.dp)); Text("Voir mes annonces") }; Button({ createAgency() }, Modifier.fillMaxWidth(), enabled = agency == null) { Icon(Icons.Default.Business, null); Spacer(Modifier.width(6.dp)); Text(if (agency == null) "Créer mon agence immobilière" else "Agence créée") }; if (agency != null) { OutlinedButton(agencyPage, Modifier.fillMaxWidth()) { Text("Voir ma page agence") }; OutlinedButton(cert, Modifier.fillMaxWidth()) { Icon(Icons.Default.Verified, null); Spacer(Modifier.width(6.dp)); Text("Certification de l’agence") }; if (!agency.extraSlotsPaid) OutlinedButton({ scope.launch { val url = repo.createPayment("agency_extra_slots"); context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } }, Modifier.fillMaxWidth()) { Text("Débloquer 10 annonces supplémentaires — 5 000 FCFA") } }; HorizontalDivider(); OutlinedButton(logout, Modifier.fillMaxWidth()) { Text("Déconnexion") }; TextButton({ showDelete = true }) { Text("Supprimer mon compte", color = MaterialTheme.colorScheme.error) } }
     if (showDelete) AlertDialog(onDismissRequest = { showDelete = false }, title = { Text("Supprimer définitivement le compte ?") }, text = { Text("Cette action supprime votre profil, vos annonces et votre agence.") }, confirmButton = { TextButton({ showDelete = false; scope.launch { repo.deleteAccount(); logout() } }) { Text("Supprimer") } }, dismissButton = { TextButton({ showDelete = false }) { Text("Annuler") } })
 }
 
