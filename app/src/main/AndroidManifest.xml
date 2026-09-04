@@ -4,8 +4,8 @@
     <application
         android:theme="@style/Theme.ImmoLink"
         android:label="ImmoLink"
-        android:icon="@drawable/immo_logo"
-        android:roundIcon="@drawable/immo_logo"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="true"
         android:supportsRtl="true">
         <service android:name=".MyFirebaseMessagingService" android:exported="false"><intent-filter><action android:name="com.google.firebase.MESSAGING_EVENT"/></intent-filter></service>

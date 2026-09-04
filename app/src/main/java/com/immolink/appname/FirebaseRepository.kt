@@ -17,7 +17,8 @@ class FirebaseRepository {
 
     suspend fun getProfile(uid: String): UserProfile {
         val d = db.collection("users").document(uid).get().await()
-        return d.toObject(UserProfile::class.java) ?: UserProfile(uid = uid)
+        if (!d.exists()) throw IllegalStateException("Profil introuvable")
+        return d.toObject(UserProfile::class.java)?.copy(uid = uid) ?: throw IllegalStateException("Profil invalide")
     }
 
     suspend fun getAgency(uid: String): Agency? = db.collection("agencies").document(uid).get().await().toObject(Agency::class.java)
@@ -56,12 +57,19 @@ class FirebaseRepository {
 
     suspend fun searchListings(uid: String, criteria: SearchCriteria): List<Listing> {
         val profile = getProfile(uid)
-        var q = db.collection("listings").whereEqualTo("country", profile.country).whereEqualTo("active", true).whereEqualTo("mode", criteria.mode)
-        if (criteria.city.isNotBlank()) q = q.whereEqualTo("city", criteria.city)
-        if (criteria.propertyType.isNotBlank()) q = q.whereEqualTo("propertyType", criteria.propertyType)
-        if (criteria.minPrice > 0) q = q.whereGreaterThanOrEqualTo("price", criteria.minPrice)
-        if (criteria.maxPrice != null) q = q.whereLessThanOrEqualTo("price", criteria.maxPrice!!)
-        return q.get().await().documents.mapNotNull { it.toObject(Listing::class.java)?.copy(id = it.id) }.sortedByDescending { it.createdAt?.seconds ?: 0 }
+        // Keep the Firestore query deliberately simple. Optional filters are applied locally,
+        // which avoids fragile composite-index combinations and keeps country isolation explicit.
+        val base = db.collection("listings")
+            .whereEqualTo("country", profile.country)
+            .whereEqualTo("active", true)
+            .whereEqualTo("mode", criteria.mode)
+            .get().await()
+        return base.documents.mapNotNull { it.toObject(Listing::class.java)?.copy(id = it.id) }
+            .filter { criteria.city.isBlank() || it.city == criteria.city }
+            .filter { criteria.propertyType.isBlank() || it.propertyType == criteria.propertyType }
+            .filter { criteria.minPrice <= 0 || it.price >= criteria.minPrice }
+            .filter { criteria.maxPrice == null || it.price <= criteria.maxPrice!! }
+            .sortedByDescending { it.createdAt?.seconds ?: 0 }
     }
 
     suspend fun getFeatured(uid: String, mode: String): List<Listing> = searchListings(uid, SearchCriteria(mode = mode)).take(30)

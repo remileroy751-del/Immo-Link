@@ -7,9 +7,14 @@ service cloud.firestore {
     function isAdmin() { return signedIn() && me().data.admin == true; }
 
     match /users/{uid} {
-      allow create: if signedIn() && request.auth.uid == uid && request.resource.data.country in ['Togo','Bénin','Mali','Burkina Faso',"Côte d'Ivoire"] && request.resource.data.agency == false;
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.country in ['Togo','Bénin','Mali','Burkina Faso',"Côte d'Ivoire"]
+        && request.resource.data.agency == false;
       allow read: if signedIn() && request.auth.uid == uid;
-      allow update: if signedIn() && request.auth.uid == uid && request.resource.data.country == resource.data.country && request.resource.data.countryCode == resource.data.countryCode && request.resource.data.agency == resource.data.agency;
+      allow update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.country == resource.data.country
+        && request.resource.data.countryCode == resource.data.countryCode
+        && request.resource.data.agency == resource.data.agency;
       allow delete: if false;
       match /favorites/{listingId} {
         allow read: if signedIn() && request.auth.uid == uid;
@@ -17,17 +22,48 @@ service cloud.firestore {
         allow delete: if signedIn() && request.auth.uid == uid;
       }
     }
-    match /publicProfiles/{uid} { allow read: if signedIn() && resource.data.country == me().data.country; allow write: if false; }
-    match /agencies/{uid} { allow read: if signedIn() && (request.auth.uid == uid || resource.data.country == me().data.country); allow write: if false; }
-    match /listings/{id} { allow read: if signedIn() && resource.data.country == me().data.country; allow create, update, delete: if false; }
-    match /savedSearches/{id} { allow create: if signedIn() && request.resource.data.userId == request.auth.uid && request.resource.data.country == me().data.country; allow read, delete: if signedIn() && resource.data.userId == request.auth.uid; allow update: if signedIn() && resource.data.userId == request.auth.uid; }
-    match /reports/{id} { allow create: if signedIn() && request.resource.data.reporterId == request.auth.uid && request.resource.data.country == me().data.country; allow read: if isAdmin(); allow update: if isAdmin(); }
-    match /payments/{id} { allow read: if signedIn() && resource.data.userId == request.auth.uid; allow write: if false; }
+
+    match /publicProfiles/{uid} {
+      allow read: if signedIn() && resource.data.country == me().data.country;
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.data.country == me().data.country;
+      allow update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.country == resource.data.country
+        && request.resource.data.country == me().data.country;
+      allow delete: if false;
+    }
+
+    match /agencies/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || resource.data.country == me().data.country);
+      allow write: if false;
+    }
+    match /listings/{id} {
+      allow read: if signedIn() && resource.data.country == me().data.country;
+      allow create, update, delete: if false;
+    }
+    match /savedSearches/{id} {
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid && request.resource.data.country == me().data.country;
+      allow read, delete: if signedIn() && resource.data.userId == request.auth.uid;
+      allow update: if signedIn() && resource.data.userId == request.auth.uid;
+    }
+    match /reports/{id} {
+      allow create: if signedIn() && request.resource.data.reporterId == request.auth.uid && request.resource.data.country == me().data.country;
+      allow read: if isAdmin();
+      allow update: if isAdmin();
+    }
+    match /payments/{id} {
+      allow read: if signedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
     match /chats/{chatId} {
       allow read: if signedIn() && request.auth.uid in resource.data.participants && sameCountry(resource.data.country);
       allow create: if signedIn() && request.auth.uid in request.resource.data.participants && request.resource.data.country == me().data.country;
       allow update: if signedIn() && request.auth.uid in resource.data.participants && sameCountry(resource.data.country);
-      match /messages/{messageId} { allow read, create: if signedIn() && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants && sameCountry(get(/databases/$(database)/documents/chats/$(chatId)).data.country); }
+      match /messages/{messageId} {
+        allow read, create: if signedIn()
+          && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants
+          && sameCountry(get(/databases/$(database)/documents/chats/$(chatId)).data.country);
+      }
     }
   }
 }

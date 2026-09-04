@@ -1,8 +1,8 @@
-# ImmoLink Android V4
+# ImmoLink Android V5 — correctif stabilité + interface
 
 Plateforme Android immobilière pour le Togo, Bénin, Mali, Burkina Faso et Côte d'Ivoire.
 
-## Fonctionnalités V4
+## Fonctionnalités V5
 1. Favoris.
 2. Recherche avancée : louer/vendre/bailler, type, ville, budget.
 3. Notifications Firebase Cloud Messaging.
@@ -58,3 +58,21 @@ Pour une version release signée, ajouter ultérieurement un keystore Android et
 
 ### Correctif CI GitHub Actions
 Le workflow utilise Gradle **9.6.1** avec `gradle/actions/setup-gradle@v4`. Le rapport de CI indiquait que la valeur `9.6` n'était pas acceptée par l'action ; une version exacte est maintenant fournie. Gradle 9.6.1 est une version officielle de Gradle.
+
+## Correctifs V5 importants
+- Le profil utilisateur est chargé avec gestion d'erreur : une erreur Firebase ne ferme plus l'application.
+- Toutes les principales lectures asynchrones de l'interface sont protégées par des gestionnaires d'erreur afin d'éviter les fermetures lors d'un retour réseau ou d'une permission Firebase.
+- La recherche principale utilise une requête Firestore simple (pays + statut + mode) puis applique les filtres optionnels localement, ce qui évite les combinaisons d'index fragiles au premier démarrage.
+- L'inscription crée le profil privé et le profil public avant de laisser l'état connecté se stabiliser.
+- Les règles Firestore autorisent désormais la création/mise à jour du profil public par son propriétaire, tout en conservant l'isolation stricte par pays.
+- Les écrans agence/profil utilisent des listes correctement contraintes pour éviter les erreurs de mesure Compose.
+- L'interface reprend directement les couleurs du logo : bleu profond, orange et fonds clairs, avec cartes, boutons, en-têtes et navigation modernisés.
+- L'icône Android utilise uniquement le dessin du logo, sans le texte « ImmoLink / VOTRE LIEN IMMOBILIER ». Le logo complet reste utilisé dans l'écran d'accueil.
+
+## Important après le remplacement du projet
+Le ZIP est organisé directement à la racine du dépôt GitHub : le dossier `.github` et `app` doivent être au même niveau que `build.gradle.kts`.
+Pour le correctif Firebase côté sécurité/règles, redéployer les règles après remplacement du projet :
+
+```bash
+firebase deploy --only firestore:rules,firestore:indexes,storage,functions
+```
