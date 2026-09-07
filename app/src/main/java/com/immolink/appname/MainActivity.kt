@@ -228,6 +228,47 @@ fun AuthFlow(onAuthenticated: (String) -> Unit) {
     }
 }
 
+@Composable
+fun AuthCard(title: String, error: String, onBack: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    Surface(modifier = Modifier.fillMaxSize(), color = Light) {
+        Column(
+            modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, contentDescription = "Retour", tint = Navy) }
+                Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, color = Navy, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.size(48.dp))
+            }
+            if (error.isNotBlank()) {
+                Surface(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(14.dp)) {
+                    Text(error, color = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.padding(12.dp))
+                }
+            }
+            content()
+        }
+    }
+}
+
+@Composable
+fun BrandHeader(compact: Boolean = false) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+        Image(painterResource(R.drawable.immo_logo), "ImmoLink", Modifier.width(if (compact) 170.dp else 220.dp), contentScale = ContentScale.Fit)
+        if (!compact) Text("Votre lien immobilier", color = Navy, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+fun FeatureLine(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Surface(modifier = Modifier.size(38.dp), shape = CircleShape, color = OrangeSoft) {
+            Box(contentAlignment = Alignment.Center) { Icon(icon, null, tint = Orange, modifier = Modifier.size(20.dp)) }
+        }
+        Text(text, color = Ink, modifier = Modifier.weight(1f))
+    }
+}
+
 @Composable fun CountryDropdown(value: String, onChange: (String) -> Unit) = DropdownField(value.ifBlank { "Sélectionner le pays" }, Data.countries.map { it.first }, onChange)
 @Composable fun CityDropdown(country: String, value: String, onChange: (String) -> Unit) = DropdownField(value.ifBlank { "Sélectionner la ville" }, Data.cities[country] ?: emptyList(), onChange)
 
