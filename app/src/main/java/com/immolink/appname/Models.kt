@@ -20,7 +20,7 @@ data class Agency(
         if (!certified || certificationExpiresAt.isNullOrBlank()) return false
         return runCatching {
             val fmt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSX", Locale.US)
-            (fmt.parse(certificationExpiresAt)?.time ?: 0L) > System.currentTimeMillis()
+            (fmt.parse(certificationExpiresAt ?: "")?.time ?: 0L) > System.currentTimeMillis()
         }.getOrDefault(false)
     }
 }
