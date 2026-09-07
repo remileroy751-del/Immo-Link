@@ -38,4 +38,7 @@ data class SearchCriteria(
 
 data class BudgetRange(val label: String, val min: Long = 0, val max: Long? = null)
 data class ChatMessage(val id: String = "", val senderId: String = "", val text: String = "", val createdAt: String? = null)
-data class ChatSummary(val id: String = "", val listingId: String = "", val participants: List<String> = emptyList(), val lastText: String = "", val updatedAt: String? = null)
+data class ChatSummary(val id: String = "", val listingId: String = "", val participants: List<String> = emptyList(), val lastText: String = "", val updatedAt: String? = null, val displayName: String = "", val listingLabel: String = "")
+
+
+data class PaymentIntent(val paymentId: String = "", val promotionId: String = "", val amount: Long = 0)

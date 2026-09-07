@@ -1,12 +1,14 @@
 package com.immolink.appname
 
 import android.Manifest
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
@@ -40,6 +42,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
+import co.opensi.kkiapay.uikit.Kkiapay
+import co.opensi.kkiapay.uikit.SdkConfig
 import kotlinx.coroutines.launch
 import java.text.NumberFormat
 import java.util.Locale
@@ -61,9 +65,56 @@ private fun readableError(error: Throwable): String {
 }
 
 class MainActivity : ComponentActivity() {
+    private var paymentCallback: ((String, String) -> Unit)? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        runCatching {
+            Kkiapay.init(
+                applicationContext,
+                KkiapayConfig.PUBLIC_KEY,
+                SdkConfig(themeColor = R.color.colorPrimary, enableSandbox = false)
+            )
+        }
         setContent { ImmoLinkApp() }
+    }
+
+    fun startKkiapayPayment(
+        amount: Long,
+        reason: String,
+        partnerId: String,
+        profile: UserProfile,
+        onResult: (status: String, transactionId: String) -> Unit
+    ) {
+        paymentCallback = onResult
+        val phone = digits(profile.countryCode).removePrefix("00") + digits(profile.phone)
+        Kkiapay.get().requestPayment(
+            this,
+            amount.toInt(),
+            reason = reason,
+            api_key = KkiapayConfig.PUBLIC_KEY,
+            sandbox = false,
+            name = profile.firstName,
+            partnerId = partnerId,
+            phone = phone,
+            email = profile.email,
+            paymentMethods = listOf("momo", "card", "direct_debit")
+        )
+    }
+
+    override fun onStart() {
+        super.onStart()
+        runCatching {
+            Kkiapay.get().setListener { status, transactionId ->
+                paymentCallback?.invoke(status.name, transactionId)
+                paymentCallback = null
+            }
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        runCatching { Kkiapay.get().handleActivityResult(requestCode, resultCode, data) }
     }
 }
 
@@ -353,6 +404,22 @@ fun AppShell(uid: String, logout: () -> Unit) {
     if (loadError.isNotBlank() || profile == null) return StartupErrorScreen(loadError.ifBlank { "Profil introuvable." }, ::load, logout)
 
     val p = profile!!
+    BackHandler(enabled = screen != "home") {
+        screen = when (screen) {
+            "chat" -> "chats"
+            "chats" -> "home"
+            "detail" -> "home"
+            "owner" -> "detail"
+            "search" -> "home"
+            "publish" -> "profile"
+            "agencyCreate" -> "profile"
+            "agency" -> "home"
+            "myListings" -> "profile"
+            "certification" -> "profile"
+            "profile" -> "home"
+            else -> "home"
+        }
+    }
     when (screen) {
         "detail" -> selected?.let { ListingDetail(uid, it, repo, { screen = "home" }, { ownerUid = it.ownerId; screen = "owner" }, { screen = "chat" }) } ?: run { screen = "home" }
         "search" -> SearchScreen(uid, p, repo) { selected = it; screen = "detail" }
@@ -390,12 +457,16 @@ fun StartupErrorScreen(message: String, retry: () -> Unit, logout: () -> Unit) =
 @Composable
 fun HomeScreen(uid: String, p: UserProfile, tab: String, repo: SupabaseRepository, setTab: (String) -> Unit, open: (Listing) -> Unit, search: () -> Unit, publish: () -> Unit, profile: () -> Unit, chats: () -> Unit) {
     var listings by remember(tab, p.country) { mutableStateOf<List<Listing>>(emptyList()) }
+    var promoted by remember(tab, p.country) { mutableStateOf<List<Listing>>(emptyList()) }
     var loading by remember(tab, p.country) { mutableStateOf(true) }
     var error by remember(tab, p.country) { mutableStateOf("") }
     LaunchedEffect(tab, p.country) {
         loading = true
         error = ""
-        try { listings = repo.getFeatured(uid, tab) } catch (e: Exception) { error = readableError(e); listings = emptyList() }
+        try {
+            listings = repo.getFeatured(uid, tab)
+            promoted = repo.getPromotedListings(uid, tab)
+        } catch (e: Exception) { error = readableError(e); listings = emptyList(); promoted = emptyList() }
         finally { loading = false }
     }
     Scaffold(
@@ -430,6 +501,22 @@ fun HomeScreen(uid: String, p: UserProfile, tab: String, repo: SupabaseRepositor
             }
             item { OutlinedButton(search, Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.Tune, null); Spacer(Modifier.width(8.dp)); Text("Recherche avancée") } }
             item { Button(publish, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp)) { Icon(Icons.Default.AddHome, null); Spacer(Modifier.width(8.dp)); Text("Proposer une offre") } }
+            if (promoted.isNotEmpty()) {
+                item { Text("Annonces sponsorisées", style = MaterialTheme.typography.titleLarge, color = Navy) }
+                items(promoted) { item ->
+                    Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = OrangeSoft), modifier = Modifier.fillMaxWidth().clickable { open(item) }) {
+                        Column(Modifier.padding(10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Campaign, null, tint = Orange)
+                                Spacer(Modifier.width(6.dp))
+                                Text("À LA UNE", color = Orange, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            ListingCard(item, open)
+                        }
+                    }
+                }
+            }
             if (loading) item { Box(Modifier.fillMaxWidth().padding(30.dp), Alignment.Center) { CircularProgressIndicator(color = Orange) } }
             else if (error.isNotBlank()) item { Surface(color = Color(0xFFFFF4F2), shape = RoundedCornerShape(14.dp)) { Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(14.dp)) } }
             else if (listings.isEmpty()) item { EmptyState("Aucune annonce ne correspond pour le moment.") }
@@ -545,7 +632,7 @@ fun PublishScreen(uid: String, p: UserProfile, repo: SupabaseRepository, initial
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris = it.take(4) }
     Column(Modifier.fillMaxSize().background(Light).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Proposer une offre", style = MaterialTheme.typography.headlineMedium, color = Navy)
-        Text("Votre annonce reste en ligne 7 jours. Maximum 4 photos : la première est l’image principale.", color = Muted)
+        Text("Votre annonce reste en ligne 15 jours. Elle se désactive automatiquement ensuite. Maximum 4 photos : la première est l’image principale.", color = Muted)
         DropdownField(if (mode.isBlank()) "Vendre ou mettre en location" else if (mode == "sale") "Vendre" else "Mettre en location", listOf("Vendre", "Mettre en location")) { mode = if (it == "Vendre") "sale" else "rent"; type = "" }
         if (mode.isNotBlank()) DropdownField(type.ifBlank { "Type de bien" }, if (mode == "sale") Data.saleTypes else Data.rentTypes) { type = it }
         if (mode.isNotBlank()) {
@@ -584,7 +671,19 @@ fun ProfileScreen(uid: String, p: UserProfile, agency: Agency?, repo: SupabaseRe
         if (agency != null) {
             OutlinedButton(agencyPage, Modifier.fillMaxWidth().height(50.dp)) { Text("Voir ma page agence") }
             OutlinedButton(cert, Modifier.fillMaxWidth().height(50.dp)) { Icon(Icons.Default.Verified, null); Spacer(Modifier.width(6.dp)); Text("Certification de l’agence") }
-            if (!agency.extraSlotsPaid) OutlinedButton({ scope.launch { runCatching { repo.createPayment("agency_extra_slots") }.onSuccess { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(it))) }.onFailure { error = readableError(it) } } }, Modifier.fillMaxWidth().height(50.dp)) { Text("Débloquer 10 annonces supplémentaires — 5 000 FCFA") }
+            if (!agency.extraSlotsPaid) OutlinedButton({
+                val activity = context as? MainActivity
+                if (activity != null) scope.launch {
+                    runCatching { repo.createExtraSlotsIntent() }.onSuccess { intent ->
+                        activity.startKkiapayPayment(intent.amount, "10 annonces supplémentaires ImmoLink", intent.paymentId, p) { status, tx ->
+                            scope.launch {
+                                runCatching { repo.attachPaymentTransaction(intent.paymentId, tx, status == "SUCCESS") }
+                                error = if (status == "SUCCESS") "Paiement reçu. Les 10 emplacements seront activés après confirmation sécurisée." else "Paiement non validé."
+                            }
+                        }
+                    }.onFailure { error = readableError(it) }
+                }
+            }, Modifier.fillMaxWidth().height(50.dp)) { Text("Débloquer 10 annonces supplémentaires — 5 000 FCFA") }
         }
         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
         HorizontalDivider()
@@ -612,8 +711,13 @@ fun AgencyCreateScreen(uid: String, p: UserProfile, repo: SupabaseRepository, do
 
 @Composable
 fun AgencyScreen(uid: String, repo: SupabaseRepository, back: () -> Unit) {
-    var agency by remember { mutableStateOf<Agency?>(null) }; var listings by remember { mutableStateOf<List<Listing>>(emptyList()) }; var error by remember { mutableStateOf("") }
+    var agency by remember { mutableStateOf<Agency?>(null) }; var listings by remember { mutableStateOf<List<Listing>>(emptyList()) }; var error by remember { mutableStateOf("") }; var promoteListing by remember { mutableStateOf<Listing?>(null) }
+    val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { try { agency = repo.getAgency(uid); listings = repo.getMyListings(uid) } catch (e: Exception) { error = readableError(e) } }
+    if (promoteListing != null) {
+        PromotionScreen(uid, promoteListing!!, repo, { promoteListing = null }, { scope.launch { listings = repo.getMyListings(uid); promoteListing = null } })
+        return
+    }
     if (agency == null && error.isBlank()) return LoadingScreen("Chargement de l’agence…")
     LazyColumn(Modifier.fillMaxSize().background(Light), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Row(verticalAlignment = Alignment.CenterVertically) { IconButton(back) { Icon(Icons.Default.ArrowBack, "Retour") }; Text("Page agence", style = MaterialTheme.typography.headlineMedium, color = Navy) } }
@@ -621,8 +725,61 @@ fun AgencyScreen(uid: String, repo: SupabaseRepository, back: () -> Unit) {
         agency?.let { a ->
             item { Surface(shape = RoundedCornerShape(22.dp), color = Color.White) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { if (a.logoUrl.isNotBlank()) AsyncImage(a.logoUrl, "Logo agence", Modifier.size(90.dp).clip(RoundedCornerShape(16.dp)), contentScale = ContentScale.Crop); Text(a.name, fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Navy); if (a.badgeActive()) Text("✓ Agence certifiée", color = Orange, fontWeight = FontWeight.Bold); Text(a.address); Text(a.email, color = Muted); Text("${listings.size} annonce(s)", color = Muted) } } }
             item { Text("Annonces de l’agence", style = MaterialTheme.typography.titleLarge, color = Navy) }
-            items(listings) { ListingCard(it) {} }
+            items(listings) { item ->
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ListingCard(item) {}
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton({ scope.launch { runCatching { repo.deleteListing(item.id); listings = repo.getMyListings(uid) }.onFailure { error = readableError(it) } } }, Modifier.weight(1f), enabled = item.active) { Icon(Icons.Default.VisibilityOff, null); Spacer(Modifier.width(4.dp)); Text("Désactiver l'annonce") }
+                        Button({ promoteListing = item }, Modifier.weight(1f), enabled = item.active) { Icon(Icons.Default.Campaign, null); Spacer(Modifier.width(4.dp)); Text("Promouvoir") }
+                    }
+                }
+            }
         }
+    }
+}
+
+@Composable
+fun PromotionScreen(uid: String, listing: Listing, repo: SupabaseRepository, cancel: () -> Unit, refresh: () -> Unit) {
+    val context = LocalContext.current
+    val activity = context as? MainActivity
+    val profile = remember { mutableStateOf<UserProfile?>(null) }
+    val scope = rememberCoroutineScope()
+    var days by remember { mutableIntStateOf(5) }
+    var targetUsers by remember { mutableIntStateOf(50) }
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf("") }
+    LaunchedEffect(uid) { profile.value = runCatching { repo.getProfile(uid) }.getOrNull() }
+    val cost = ((targetUsers + 49) / 50) * ((days + 4) / 5) * 1000L
+    Column(Modifier.fillMaxSize().background(Light).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) { IconButton(cancel) { Icon(Icons.Default.ArrowBack, "Retour") }; Text("Promouvoir l’annonce", style = MaterialTheme.typography.headlineMedium, color = Navy) }
+        Text("${listing.propertyType} • ${money(listing.price)}", color = Navy, fontWeight = FontWeight.Bold)
+        Text("L’annonce sera prioritairement proposée aux utilisateurs de ${listing.city}, puis aux autres villes de ${listing.country}.", color = Muted)
+        Text("Durée : $days jours", fontWeight = FontWeight.Bold, color = Navy)
+        Slider(value = days.toFloat(), onValueChange = { days = it.toInt().coerceIn(5,15) }, valueRange = 5f..15f, steps = 9)
+        Text("Nombre de comptes ciblés : $targetUsers", fontWeight = FontWeight.Bold, color = Navy)
+        Slider(value = targetUsers.toFloat(), onValueChange = { targetUsers = (it.toInt() / 50 * 50).coerceIn(50, 5000) }, valueRange = 50f..5000f, steps = 98)
+        Surface(shape = RoundedCornerShape(18.dp), color = OrangeSoft) { Column(Modifier.padding(16.dp)) { Text("Budget estimé", color = Muted); Text(money(cost), fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Orange); Text("Base : 1 000 FCFA pour 50 comptes pendant 5 jours. Le coût s’ajuste automatiquement.", color = Muted, fontSize = 12.sp) } }
+        if (message.isNotBlank()) Text(message, color = if (message.startsWith("Paiement")) Success else MaterialTheme.colorScheme.error)
+        Button({
+            val a = activity
+            val pr = profile.value
+            if (a != null && pr != null) {
+                scope.launch {
+                    busy = true; message = ""
+                    try {
+                        val intent = repo.createPromotionIntent(listing.id, days, targetUsers)
+                        a.startKkiapayPayment(cost, "Promotion ImmoLink - ${listing.propertyType}", intent.paymentId, pr) { status, tx ->
+                            scope.launch {
+                                runCatching { repo.attachPaymentTransaction(intent.paymentId, tx, status == "SUCCESS") }
+                                message = if (status == "SUCCESS") "Paiement reçu. La promotion sera activée après confirmation sécurisée." else "Paiement non validé."
+                                if (status == "SUCCESS") refresh()
+                            }
+                        }
+                    } catch (e: Exception) { message = readableError(e) } finally { busy = false }
+                }
+            }
+        }, Modifier.fillMaxWidth().height(54.dp), enabled = !busy && activity != null && profile.value != null) { Text(if (busy) "Préparation…" else "Payer $cost FCFA et promouvoir") }
+        OutlinedButton(cancel, Modifier.fillMaxWidth().height(50.dp)) { Text("Annuler") }
     }
 }
 
@@ -655,15 +812,29 @@ fun MyListingsScreen(uid: String, repo: SupabaseRepository, done: () -> Unit) {
 
 @Composable
 fun CertificationScreen(uid: String, agency: Agency?, repo: SupabaseRepository, done: () -> Unit) {
-    var uris by remember { mutableStateOf<List<Uri>>(emptyList()) }; var busy by remember { mutableStateOf(false) }; var msg by remember { mutableStateOf("") }; val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris = it.take(2) }; val context = LocalContext.current; val scope = rememberCoroutineScope()
+    var uris by remember { mutableStateOf<List<Uri>>(emptyList()) }; var busy by remember { mutableStateOf(false) }; var msg by remember { mutableStateOf("") }; val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris = it.take(2) }; val context = LocalContext.current; val scope = rememberCoroutineScope(); val activity = context as? MainActivity; var profile by remember { mutableStateOf<UserProfile?>(null) }
+    LaunchedEffect(uid) { profile = runCatching { repo.getProfile(uid) }.getOrNull() }
     Column(Modifier.fillMaxSize().background(Light).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Certification de l’agence", style = MaterialTheme.typography.headlineMedium, color = Navy)
         Text("Envoyez le recto et le verso de la pièce d’identité du propriétaire. Les documents sont protégés dans Supabase Storage et la validation est faite avant l’activation du badge.", color = Muted)
         OutlinedButton({ picker.launch("image/*") }, Modifier.fillMaxWidth().height(50.dp)) { Icon(Icons.Default.Badge, null); Spacer(Modifier.width(6.dp)); Text("Ajouter recto + verso (${uris.size}/2)") }
-        if (uris.size == 2) Button({ scope.launch { busy = true; msg = ""; try { val urls = repo.uploadUris(uid, "agency-verification", uris, 2); repo.submitCertification(urls[0], urls[1]); val pay = repo.createPayment("agency_certification"); context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pay))) } catch (e: Exception) { msg = readableError(e) } finally { busy = false } } }, Modifier.fillMaxWidth().height(52.dp), enabled = !busy) { if (busy) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp)) else Text("Envoyer et payer 2 000 FCFA / mois") }
-        Text("Après paiement, la demande doit être validée avant activation du badge. Le renouvellement est mensuel.", color = Muted)
+        if (uris.size == 2) Button({
+            val a = activity
+            val pr = profile
+            if (a != null && pr != null) scope.launch { busy = true; msg = ""; try {
+                val paths = repo.uploadUris(uid, "agency-verification", uris, 2)
+                val intent = repo.createCertificationIntent(paths[0], paths[1])
+                a.startKkiapayPayment(intent.amount, "Certification agence ImmoLink - 1 mois", intent.paymentId, pr) { status, tx ->
+                    scope.launch {
+                        runCatching { repo.attachPaymentTransaction(intent.paymentId, tx, status == "SUCCESS") }
+                        msg = if (status == "SUCCESS") "Paiement reçu. La certification sera activée après validation sécurisée." else "Paiement non validé."
+                    }
+                }
+            } catch (e: Exception) { msg = readableError(e) } finally { busy = false } }
+        }, Modifier.fillMaxWidth().height(52.dp), enabled = !busy && activity != null && profile != null) { if (busy) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp)) else Text("Envoyer et payer 1 000 FCFA / mois") }
+        Text("Le badge est activé après validation du dossier et confirmation du paiement. Renouvellement mensuel : 1 000 FCFA.", color = Muted)
         if (agency?.badgeActive() == true) Text("✓ Votre badge est actif jusqu’au ${agency.certificationExpiresAt}", color = Orange, fontWeight = FontWeight.Bold)
-        if (msg.isNotBlank()) Text(msg, color = MaterialTheme.colorScheme.error)
+        if (msg.isNotBlank()) Text(msg, color = if (msg.startsWith("Paiement reçu")) Success else MaterialTheme.colorScheme.error)
         OutlinedButton(done, Modifier.fillMaxWidth().height(50.dp)) { Text("Retour") }
     }
 }
@@ -675,7 +846,7 @@ fun ChatsScreen(uid: String, repo: SupabaseRepository, open: (Listing) -> Unit) 
     Column(Modifier.fillMaxSize().background(Light).padding(16.dp)) {
         Text("Messages", style = MaterialTheme.typography.headlineMedium, color = Navy)
         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(vertical = 10.dp))
-        if (chats.isEmpty()) EmptyState("Aucune discussion pour le moment.") else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) { items(chats) { chat -> Card(Modifier.fillMaxWidth().clickable { scope.launch { runCatching { repo.getListing(chat.listingId)?.let(open) }.onFailure { error = readableError(it) } } }, shape = RoundedCornerShape(18.dp)) { Column(Modifier.padding(14.dp)) { Text(chat.lastText.ifBlank { "Discussion" }, fontWeight = FontWeight.SemiBold, color = Navy); Text("Annonce : ${chat.listingId}", color = Muted) } } } }
+        if (chats.isEmpty()) EmptyState("Aucune discussion pour le moment.") else LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) { items(chats) { chat -> Card(Modifier.fillMaxWidth().clickable { scope.launch { runCatching { repo.getListing(chat.listingId)?.let(open) }.onFailure { error = readableError(it) } } }, shape = RoundedCornerShape(18.dp)) { Column(Modifier.padding(14.dp)) { Text(chat.displayName.ifBlank { "Discussion" }, fontWeight = FontWeight.Bold, color = Navy); Text("Annonce : ${chat.listingLabel.ifBlank { chat.listingId }}", color = Muted); if (chat.lastText.isNotBlank()) Text(chat.lastText, color = Ink, maxLines = 2) } } } }
     }
 }
 
@@ -685,7 +856,7 @@ fun ChatDetailScreen(uid: String, item: Listing, repo: SupabaseRepository, back:
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }; var text by remember { mutableStateOf("") }; var error by remember { mutableStateOf("") }; val scope = rememberCoroutineScope()
     LaunchedEffect(chatId) { try { messages = repo.getMessages(chatId) } catch (e: Exception) { error = readableError(e) } }
     Column(Modifier.fillMaxSize().background(Light)) {
-        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(8.dp)) { IconButton(back) { Icon(Icons.Default.ArrowBack, "Retour") }; Text("Discussion • ${item.propertyType}", fontWeight = FontWeight.Bold, color = Navy) }
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(8.dp)) { IconButton(back) { Icon(Icons.Default.ArrowBack, "Retour") }; Text("Discussion • ${item.ownerAgencyName.ifBlank { item.ownerName }}", fontWeight = FontWeight.Bold, color = Navy) }
         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 16.dp))
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { items(messages) { m -> Row(Modifier.fillMaxWidth(), horizontalArrangement = if (m.senderId == uid) Arrangement.End else Arrangement.Start) { Surface(color = if (m.senderId == uid) Navy else Color.White, shape = RoundedCornerShape(14.dp)) { Text(m.text, color = if (m.senderId == uid) Color.White else Ink, modifier = Modifier.padding(12.dp)) } } } }
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) { OutlinedTextField(text, { text = it.take(1000) }, label = { Text("Message") }, modifier = Modifier.weight(1f), singleLine = true); IconButton({ if (text.isNotBlank()) scope.launch { try { repo.sendMessage(chatId, item.id, item.country, listOf(uid, item.ownerId), uid, text.trim()); messages = repo.getMessages(chatId); text = "" } catch (e: Exception) { error = readableError(e) } } }) { Icon(Icons.Default.Send, null, tint = Orange) } }

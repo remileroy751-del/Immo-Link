@@ -12,6 +12,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import java.util.UUID
+import java.time.Instant
 
 object SupabaseConfig {
     const val URL = "https://hraiykeenouojxrcwrlx.supabase.co"
@@ -115,6 +116,20 @@ class SupabaseRepository(private val context: Context) {
 
     suspend fun relist(id: String) { request("POST", "/rest/v1/rpc/relist_listing", JSONObject().put("p_listing_id", id).toString()) }
     suspend fun deleteListing(id: String) { request("POST", "/rest/v1/rpc/delete_listing", JSONObject().put("p_listing_id", id).toString()) }
+    suspend fun createPromotionIntent(listingId: String, days: Int, targetUsers: Int): PaymentIntent {
+        val body = JSONObject().put("p_listing_id", listingId).put("p_days", days).put("p_target_users", targetUsers).toString()
+        val response = request("POST", "/rest/v1/rpc/create_promotion_intent", body)
+        val j = runCatching { JSONObject(response) }.getOrNull() ?: JSONArray(response).optJSONObject(0) ?: throw IllegalStateException("Promotion impossible")
+        return PaymentIntent(j.optString("payment_id"), j.optString("promotion_id"), j.optLong("amount"))
+    }
+    suspend fun attachPaymentTransaction(paymentId: String, transactionId: String, success: Boolean) {
+        request("POST", "/rest/v1/rpc/attach_payment_transaction", JSONObject(mapOf("p_payment_id" to paymentId, "p_transaction_id" to transactionId, "p_success" to success)).toString())
+    }
+    suspend fun getPromotedListings(uid: String, mode: String): List<Listing> {
+        val response = request("POST", "/rest/v1/rpc/get_promoted_listings", JSONObject(mapOf("p_user_id" to uid, "p_mode" to mode, "p_limit" to 5)).toString())
+        val rows = JSONArray(response)
+        return (0 until rows.length()).map { listing(rows.getJSONObject(it)) }
+    }
     suspend fun deleteAccount() { request("POST", "/rest/v1/rpc/delete_my_account", "{}") }
     suspend fun incrementViews(id: String) { request("POST", "/rest/v1/rpc/increment_listing_views", JSONObject().put("p_listing_id", id).toString()) }
 
@@ -136,13 +151,20 @@ class SupabaseRepository(private val context: Context) {
         }
     }
 
-    suspend fun submitCertification(frontPath: String, backPath: String) {
-        val agencyId = getAgency(currentUid())?.id ?: throw IllegalStateException("Agence introuvable")
-        request("POST", "/rest/v1/agency_certifications", JSONObject(mapOf("agency_id" to agencyId, "owner_id" to currentUid(), "front_path" to frontPath, "back_path" to backPath)).toString(), extra = mapOf("Prefer" to "return=minimal"))
+    suspend fun createExtraSlotsIntent(): PaymentIntent {
+        val response = request("POST", "/rest/v1/rpc/create_extra_slots_intent", "{}")
+        val j = runCatching { JSONObject(response) }.getOrNull() ?: JSONArray(response).optJSONObject(0) ?: throw IllegalStateException("Paiement impossible")
+        return PaymentIntent(j.optString("payment_id"), "", j.optLong("amount"))
     }
 
-    suspend fun createPayment(kind: String): String {
-        throw IllegalStateException("Le paiement CinetPay doit être configuré côté Supabase Edge Functions avant utilisation.")
+    suspend fun createCertificationIntent(frontPath: String, backPath: String): PaymentIntent {
+        val response = request("POST", "/rest/v1/rpc/create_certification_intent", JSONObject(mapOf("p_front_path" to frontPath, "p_back_path" to backPath)).toString())
+        val j = runCatching { JSONObject(response) }.getOrNull() ?: JSONArray(response).optJSONObject(0) ?: throw IllegalStateException("Certification impossible")
+        return PaymentIntent(j.optString("payment_id"), j.optString("certification_id"), j.optLong("amount"))
+    }
+
+    suspend fun submitCertification(frontPath: String, backPath: String) {
+        createCertificationIntent(frontPath, backPath)
     }
 
     suspend fun reportListing(listingId: String, reason: String) {
@@ -162,7 +184,7 @@ class SupabaseRepository(private val context: Context) {
 
     suspend fun searchListings(uid: String, criteria: SearchCriteria): List<Listing> {
         val p = getProfile(uid)
-        val q = StringBuilder("/rest/v1/listings?select=*&country=eq.${enc(p.country)}&active=eq.true&mode=eq.${enc(criteria.mode)}&order=created_at.desc")
+        val q = StringBuilder("/rest/v1/listings?select=*&country=eq.${enc(p.country)}&active=eq.true&expires_at=gt.${enc(Instant.now().toString())}&mode=eq.${enc(criteria.mode)}&order=created_at.desc")
         val rows = JSONArray(request("GET", q.toString()))
         return (0 until rows.length()).map { listing(rows.getJSONObject(it)) }.filter {
             (criteria.city.isBlank() || it.city == criteria.city) &&
@@ -173,14 +195,23 @@ class SupabaseRepository(private val context: Context) {
     }
 
     suspend fun getFeatured(uid: String, mode: String): List<Listing> = searchListings(uid, SearchCriteria(mode = mode)).take(30)
-    suspend fun getMyListings(uid: String): List<Listing> = JSONArray(request("GET", "/rest/v1/listings?owner_id=eq.${enc(uid)}&select=*&order=created_at.desc")).let { a -> (0 until a.length()).map { listing(a.getJSONObject(it)) } }
+    suspend fun getMyListings(uid: String): List<Listing> = JSONArray(request("POST", "/rest/v1/rpc/get_my_listings", "{}")).let { a -> (0 until a.length()).map { listing(a.getJSONObject(it)) } }
     suspend fun getListing(id: String): Listing? = JSONArray(request("GET", "/rest/v1/listings?id=eq.${enc(id)}&select=*")).optJSONObject(0)?.let(::listing)
     suspend fun getOwner(uid: String): UserProfile = getProfile(uid)
     suspend fun getOwnerAgency(uid: String): Agency? = getAgency(uid)
 
     suspend fun getChats(uid: String): List<ChatSummary> {
         val rows = JSONArray(request("GET", "/rest/v1/chats?select=*&participants=cs.{${enc(uid)}}&order=updated_at.desc"))
-        return (0 until rows.length()).map { chat(rows.getJSONObject(it)) }
+        return (0 until rows.length()).mapNotNull {
+            val c = chat(rows.getJSONObject(it))
+            val l = runCatching { getListing(c.listingId) }.getOrNull()
+            val otherId = c.participants.firstOrNull { it != uid }.orEmpty()
+            val other = if (otherId.isNotBlank()) runCatching { getProfile(otherId) }.getOrNull() else null
+            c.copy(
+                displayName = l?.ownerAgencyName?.takeIf { it.isNotBlank() } ?: other?.firstName.orEmpty().ifBlank { l?.ownerName.orEmpty() },
+                listingLabel = l?.let { "${it.propertyType.lowercase()} ${if (it.mode == "sale") "à vendre" else if (it.mode == "rent") "à louer" else "à bailler"} ${moneyLabel(it.price)}" }.orEmpty()
+            )
+        }
     }
     suspend fun getMessages(chatId: String): List<ChatMessage> {
         val rows = JSONArray(request("GET", "/rest/v1/chat_messages?chat_id=eq.${enc(chatId)}&select=*&order=created_at.asc"))
@@ -200,5 +231,6 @@ class SupabaseRepository(private val context: Context) {
     private fun agency(j: JSONObject) = Agency(j.optString("id"), j.optString("owner_id"), j.optString("name"), j.optString("logo_url"), j.optString("address"), j.optString("email"), j.optBoolean("certified"), str(j,"certification_expires_at"), j.optString("certification_status"), j.optBoolean("extra_slots_paid"), j.optInt("extra_slots"), str(j,"created_at"))
     private fun listing(j: JSONObject) = Listing(j.optString("id"), j.optString("owner_id"), j.optString("owner_name"), j.optString("owner_phone"), j.optString("owner_country_code"), j.optString("country"), j.optString("city"), j.optString("mode"), j.optString("property_type"), arr(j,"photo_urls"), j.optLong("price"), j.optLong("deposit_months"), j.optString("description"), j.optString("relationship"), str(j,"created_at"), str(j,"expires_at"), j.optBoolean("active",true), j.optLong("views"), j.optString("agency_id"), j.optString("owner_agency_name"), j.optBoolean("agency_certified"))
     private fun chat(j: JSONObject) = ChatSummary(j.optString("id"), j.optString("listing_id"), arr(j,"participants"), j.optString("last_text"), str(j,"updated_at"))
+    private fun moneyLabel(value: Long) = java.text.NumberFormat.getIntegerInstance(java.util.Locale.FRANCE).format(value) + " FCFA"
     private fun message(j: JSONObject) = ChatMessage(j.optString("id"), j.optString("sender_id"), j.optString("text"), str(j,"created_at"))
 }

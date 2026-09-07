@@ -39,7 +39,7 @@ Décompresser le ZIP, déposer son contenu à la racine du dépôt GitHub, puis 
 ## 4. Sécurité
 Ne jamais ajouter :
 - `service_role`
-- clé secrète CinetPay
+- clé secrète KKiaPay
 - secret Edge Function
 
 dans le code Android.

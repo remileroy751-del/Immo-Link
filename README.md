@@ -21,8 +21,8 @@ Ne jamais mettre une clé `service_role` dans Android. Seule la clé publishable
 ## GitHub
 Le workflow `.github/workflows/build-apk.yml` compile directement l'APK debug. Aucun Supabase CLI n'est nécessaire pour compiler.
 
-## CinetPay
-Les paiements CinetPay restent côté serveur. Le projet contient la structure SQL `payments` et `agency_certifications`. Les secrets CinetPay doivent être placés dans une fonction serveur Supabase/Edge Function, jamais dans l'application Android.
+## KKiaPay
+Les paiements ImmoLink utilisent KKiaPay. La clé publique est intégrée à l'APK ; les clés privée et secrète restent uniquement côté serveur Supabase. Le webhook de vérification est fourni dans `supabase/functions/kkiapay-webhook`.
 
 
 ### Authentification
@@ -32,3 +32,11 @@ Les paiements CinetPay restent côté serveur. Le projet contient la structure S
 - Confirmation du mot de passe obligatoire à l'inscription.
 - Affichage/masquage du mot de passe disponible dans les champs de mot de passe.
 - Désactiver la confirmation e-mail dans Supabase Auth si la connexion doit être immédiate après inscription.
+
+## V6 business updates
+- Listings expire after 15 days.
+- Agency page has Disable and Promote actions.
+- Promotions: 5–15 days, 50–5000 targeted accounts, base price 1,000 FCFA per 50 accounts per 5-day block; targeting prioritizes the owner's city, then other cities in the same country.
+- Certification: 1,000 FCFA/month.
+- Payments use KKiaPay public Android SDK. Server-side verification must use the KKiaPay private/secret keys stored only as Supabase secrets.
+- KKiaPay webhook Edge Function is included under `supabase/functions/kkiapay-webhook`.

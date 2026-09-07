@@ -11,8 +11,8 @@ android {
         applicationId = "com.immolink.appname"
         minSdk = 23
         targetSdk = 37
-        versionCode = 5
-        versionName = "5.0.0"
+        versionCode = 6
+        versionName = "6.0.0"
     }
 
     buildTypes {
@@ -44,4 +44,5 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.2")
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("com.github.kkiapay:android-sdk:master-SNAPSHOT")
 }
