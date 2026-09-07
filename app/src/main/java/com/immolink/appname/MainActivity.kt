@@ -40,24 +40,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import java.text.NumberFormat
 import java.util.Locale
 
 private fun digits(value: String) = value.filter(Char::isDigit)
-private fun authEmail(code: String, phone: String) = "u${digits(code)}${digits(phone)}@immolink.app"
-private fun validPassword(value: String) = value.matches(Regex("^[A-Za-z0-9]{6}$"))
+private fun validPassword(value: String) = value.length >= 8 && value.all { it.isLetterOrDigit() }
+private fun validEmail(value: String) = android.util.Patterns.EMAIL_ADDRESS.matcher(value.trim()).matches()
 private fun money(value: Long) = NumberFormat.getIntegerInstance(Locale.FRANCE).format(value) + " FCFA"
 private fun wa(code: String, phone: String) = "https://wa.me/${digits(code).removePrefix("00")}${digits(phone)}"
 private fun readableError(error: Throwable): String {
     val m = error.message.orEmpty()
     return when {
-        m.contains("PERMISSION_DENIED", true) || m.contains("permission-denied", true) -> "Accès Firebase refusé. Vérifiez les règles Firestore puis réessayez."
+        m.contains("SUPABASE", true) -> m.substringAfter(": ").take(220)
         m.contains("UNAVAILABLE", true) || m.contains("network", true) -> "Connexion indisponible. Vérifiez Internet puis réessayez."
         m.contains("NOT_FOUND", true) -> "La donnée demandée n’existe plus."
         m.isBlank() -> "Une erreur inattendue est survenue."
@@ -74,23 +69,16 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun ImmoLinkApp() {
-    val auth = remember { FirebaseAuth.getInstance() }
+    val context = LocalContext.current
+    val repo = remember { SupabaseRepository(context) }
     var splash by remember { mutableStateOf(true) }
-    var current by remember { mutableStateOf(auth.currentUser) }
-    DisposableEffect(Unit) {
-        val listener = FirebaseAuth.AuthStateListener { current = it.currentUser }
-        auth.addAuthStateListener(listener)
-        onDispose { auth.removeAuthStateListener(listener) }
-    }
-    LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(5000)
-        splash = false
-    }
+    var currentUid by remember { mutableStateOf(repo.currentUid().takeIf { it.isNotBlank() }) }
+    LaunchedEffect(Unit) { kotlinx.coroutines.delay(5000); splash = false }
     ImmoLinkTheme {
         when {
             splash -> SplashScreen()
-            current == null -> AuthFlow()
-            else -> AppShell(current!!.uid) { auth.signOut() }
+            currentUid == null -> AuthFlow { currentUid = it }
+            else -> AppShell(currentUid!!) { repo.signOut(); currentUid = null }
         }
     }
 }
@@ -109,151 +97,133 @@ fun SplashScreen() {
 }
 
 @Composable
-fun AuthFlow() {
+fun AuthFlow(onAuthenticated: (String) -> Unit) {
     var page by remember { mutableStateOf(0) }
     var country by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
     var city by remember { mutableStateOf("") }
     var first by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var loginEmail by remember { mutableStateOf("") }
+    var loginPassword by remember { mutableStateOf("") }
     var login by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf("") }
     val scope = rememberCoroutineScope()
-    val auth = FirebaseAuth.getInstance()
-    val db = FirebaseFirestore.getInstance()
+    val context = LocalContext.current
+    val repo = remember { SupabaseRepository(context) }
 
     fun register() {
         scope.launch {
-            busy = true
-            error = ""
+            busy = true; error = ""
             try {
-                val result = auth.createUserWithEmailAndPassword(authEmail(code, phone), password).await()
-                val uid = result.user?.uid ?: throw IllegalStateException("Compte Firebase introuvable")
-                val profile = mapOf(
-                    "uid" to uid,
-                    "firstName" to first.trim(),
-                    "phone" to digits(phone),
-                    "country" to country,
-                    "countryCode" to code,
-                    "city" to city,
-                    "agency" to false,
-                    "agencyId" to "",
-                    "createdAt" to FieldValue.serverTimestamp()
+                repo.signUp(
+                    email.trim(),
+                    password,
+                    mapOf(
+                        "firstName" to first.trim(),
+                        "phone" to digits(phone),
+                        "country" to country,
+                        "countryCode" to code,
+                        "city" to city
+                    )
                 )
-                db.collection("users").document(uid).set(profile).await()
-                db.collection("publicProfiles").document(uid).set(
-                    mapOf("uid" to uid, "firstName" to first.trim(), "country" to country, "city" to city, "agency" to false, "agencyId" to "")
-                ).await()
+                onAuthenticated(repo.currentUid())
             } catch (e: Exception) {
-                error = readableError(e)
-                if (auth.currentUser != null && !error.contains("Profil", true)) auth.signOut()
-            } finally {
-                busy = false
-            }
+                error = when {
+                    e.message?.contains("SUPABASE_EMAIL_CONFIRMATION_REQUIRED", true) == true ->
+                        "La confirmation e-mail est activée dans Supabase. Désactivez-la dans Authentication → Providers → Email."
+                    e.message?.contains("already registered", true) == true || e.message?.contains("already been registered", true) == true ->
+                        "Cette adresse e-mail possède déjà un compte. Utilisez Connexion."
+                    else -> readableError(e)
+                }
+            } finally { busy = false }
         }
     }
 
     fun doLogin() {
         scope.launch {
-            busy = true
-            error = ""
+            busy = true; error = ""
             try {
-                auth.signInWithEmailAndPassword(authEmail(code, phone), password).await()
-            } catch (_: Exception) {
-                error = "Numéro, pays ou mot de passe incorrect."
-            } finally {
-                busy = false
-            }
+                repo.signIn(loginEmail.trim(), loginPassword)
+                onAuthenticated(repo.currentUid())
+            } catch (e: Exception) {
+                error = "Adresse e-mail ou mot de passe incorrect."
+            } finally { busy = false }
         }
     }
 
     if (login) {
         return AuthCard("Connexion", error, { login = false; error = "" }) {
             BrandHeader(compact = true)
-            CountryDropdown(country) {
-                country = it
-                code = Data.countries.first { c -> c.first == it }.second
-                city = ""
-            }
-            PhoneField(code, phone) { phone = it }
-            PasswordField(password) { password = it }
-            Button({ doLogin() }, Modifier.fillMaxWidth().height(54.dp), enabled = country.isNotBlank() && phone.length >= 6 && validPassword(password) && !busy) {
+            OutlinedTextField(
+                loginEmail,
+                { loginEmail = it.take(120) },
+                label = { Text("Adresse e-mail") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Email)
+            )
+            PasswordField(loginPassword, { loginPassword = it }, "Mot de passe")
+            Button(
+                { doLogin() },
+                Modifier.fillMaxWidth().height(54.dp),
+                enabled = validEmail(loginEmail) && validPassword(loginPassword) && !busy
+            ) {
                 if (busy) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp)) else Text("Se connecter")
             }
-            TextButton({ login = false }) { Text("Créer un compte") }
+            TextButton({ login = false; page = 0 }) { Text("Créer un compte") }
         }
     }
 
     when (page) {
         0 -> AuthCard("Bienvenue sur ImmoLink", error, {}) {
-            BrandHeader()
-            Text("Trouvez rapidement un logement, un terrain ou une maison dans votre pays.", fontSize = 17.sp, color = Muted)
-            FeatureLine(Icons.Default.VerifiedUser, "Des annonces filtrées par pays")
-            FeatureLine(Icons.Default.Chat, "Contact direct par chat ou WhatsApp")
-            FeatureLine(Icons.Default.Notifications, "Alertes sur vos recherches")
+            BrandHeader(); Text("Trouvez rapidement un logement, un terrain ou une maison dans votre pays.", fontSize = 17.sp, color = Muted)
+            FeatureLine(Icons.Default.VerifiedUser, "Des annonces filtrées par pays"); FeatureLine(Icons.Default.Chat, "Contact direct par chat ou WhatsApp"); FeatureLine(Icons.Default.Notifications, "Alertes sur vos recherches")
             Button({ page = 1 }, Modifier.fillMaxWidth().height(54.dp)) { Text("Créer mon compte") }
-            OutlinedButton({ login = true }, Modifier.fillMaxWidth().height(54.dp)) { Text("J’ai déjà un compte") }
+            OutlinedButton({ login = true; error = "" }, Modifier.fillMaxWidth().height(54.dp)) { Text("J’ai déjà un compte") }
         }
         1 -> AuthCard("Votre pays de résidence", error, {}) {
-            BrandHeader(compact = true)
-            Text("Choisissez votre pays. Vous ne verrez ensuite que les annonces de ce pays.", color = Muted)
-            CountryDropdown(country) {
-                country = it
-                code = Data.countries.first { c -> c.first == it }.second
-                city = ""
-            }
+            BrandHeader(compact = true); Text("Choisissez votre pays. Vous ne verrez ensuite que les annonces de ce pays.", color = Muted)
+            CountryDropdown(country) { country = it; code = Data.countries.first { c -> c.first == it }.second; city = "" }
             Button({ page = 2 }, Modifier.fillMaxWidth().height(54.dp), enabled = country.isNotBlank()) { Text("Continuer") }
         }
         2 -> AuthCard("Votre ville", error, { page = 1 }) {
-            Text("Votre ville permet d’affiner les résultats.", color = Muted)
-            CityDropdown(country, city) { city = it }
+            Text("Votre ville permet d’affiner les résultats.", color = Muted); CityDropdown(country, city) { city = it }
             Button({ page = 3 }, Modifier.fillMaxWidth().height(54.dp), enabled = city.isNotBlank()) { Text("Continuer") }
         }
         3 -> AuthCard("Vos coordonnées", error, { page = 2 }) {
             OutlinedTextField(first, { first = it.take(40) }, label = { Text("Prénom") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             PhoneField(code, phone) { phone = it }
-            Text("Utilisez de préférence votre numéro WhatsApp.", fontSize = 12.sp, color = Muted)
+            Text("Votre numéro WhatsApp permet aux utilisateurs de vous contacter directement sur WhatsApp.", fontSize = 12.sp, color = Muted)
             Button({ page = 4 }, Modifier.fillMaxWidth().height(54.dp), enabled = first.isNotBlank() && phone.length >= 6) { Text("Continuer") }
         }
-        4 -> AuthCard("Créer votre mot de passe", error, { page = 3 }) {
-            Text("6 caractères exactement, lettres et chiffres uniquement.", color = Muted)
-            PasswordField(password) { password = it }
-            Button(::register, Modifier.fillMaxWidth().height(54.dp), enabled = validPassword(password) && !busy) {
+        4 -> AuthCard("Votre compte", error, { page = 3 }) {
+            Text("L’adresse e-mail sera votre identifiant de connexion.", color = Muted)
+            OutlinedTextField(
+                email,
+                { email = it.take(120) },
+                label = { Text("Adresse e-mail") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Email)
+            )
+            PasswordField(password, { password = it }, "Mot de passe")
+            PasswordField(confirmPassword, { confirmPassword = it }, "Confirmer le mot de passe")
+            Text("8 caractères minimum, lettres et chiffres uniquement.", fontSize = 12.sp, color = Muted)
+            if (confirmPassword.isNotBlank() && password != confirmPassword) {
+                Text("Les deux mots de passe ne correspondent pas.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+            }
+            Button(
+                ::register,
+                Modifier.fillMaxWidth().height(54.dp),
+                enabled = validEmail(email) && validPassword(password) && password == confirmPassword && !busy
+            ) {
                 if (busy) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp)) else Text("Créer mon compte")
             }
-        }
-    }
-}
-
-@Composable
-fun BrandHeader(compact: Boolean = false) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-        Image(painterResource(R.drawable.immo_logo), "ImmoLink", Modifier.width(if (compact) 190.dp else 235.dp))
-        if (!compact) Text("VOTRE LIEN IMMOBILIER", color = Navy, letterSpacing = 3.sp, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-fun FeatureLine(icon: androidx.compose.ui.graphics.vector.ImageVector, text: String) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Surface(shape = CircleShape, color = OrangeSoft, modifier = Modifier.size(34.dp)) {
-            Box(contentAlignment = Alignment.Center) { Icon(icon, null, tint = Orange, modifier = Modifier.size(18.dp)) }
-        }
-        Text(text, color = Ink)
-    }
-}
-
-@Composable
-fun AuthCard(title: String, error: String, back: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
-    Box(Modifier.fillMaxSize().background(Light).padding(horizontal = 20.dp, vertical = 16.dp)) {
-        Column(Modifier.verticalScroll(rememberScrollState()).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            if (title != "Bienvenue sur ImmoLink" && title != "Connexion") IconButton(back) { Icon(Icons.Default.ArrowBack, "Retour") }
-            Text(title, style = MaterialTheme.typography.headlineMedium, color = Navy)
-            if (error.isNotBlank()) Surface(color = Color(0xFFFFEDEC), shape = RoundedCornerShape(12.dp)) { Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp)) }
-            content()
-            Spacer(Modifier.height(20.dp))
         }
     }
 }
@@ -282,12 +252,27 @@ fun PhoneField(code: String, phone: String, onPhone: (String) -> Unit) {
 }
 
 @Composable
-fun PasswordField(value: String, onChange: (String) -> Unit) = OutlinedTextField(value, { onChange(it.filter(Char::isLetterOrDigit).take(6)) }, label = { Text("Mot de passe") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true)
+fun PasswordField(value: String, onChange: (String) -> Unit, label: String = "Mot de passe") {
+    var visible by remember { mutableStateOf(false) }
+    OutlinedTextField(
+        value = value,
+        onValueChange = { onChange(it.filter(Char::isLetterOrDigit).take(128)) },
+        label = { Text(label) },
+        visualTransformation = if (visible) androidx.compose.ui.text.input.VisualTransformation.None else PasswordVisualTransformation(),
+        trailingIcon = {
+            IconButton({ visible = !visible }) {
+                Icon(if (visible) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = if (visible) "Masquer le mot de passe" else "Afficher le mot de passe")
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true
+    )
+}
 
 @Composable
 fun AppShell(uid: String, logout: () -> Unit) {
-    val repo = remember { FirebaseRepository() }
     val context = LocalContext.current
+    val repo = remember { SupabaseRepository(context) }
     val scope = rememberCoroutineScope()
     var profile by remember { mutableStateOf<UserProfile?>(null) }
     var agency by remember { mutableStateOf<Agency?>(null) }
@@ -311,10 +296,6 @@ fun AppShell(uid: String, logout: () -> Unit) {
                 agency = repo.getAgency(uid)
                 if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                     notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-                }
-                runCatching {
-                    val token = FirebaseMessaging.getInstance().token.await()
-                    FirebaseFirestore.getInstance().collection("users").document(uid).update("fcmToken", token).await()
                 }
             } catch (e: Exception) {
                 profile = null
@@ -366,7 +347,7 @@ fun StartupErrorScreen(message: String, retry: () -> Unit, logout: () -> Unit) =
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(uid: String, p: UserProfile, tab: String, repo: FirebaseRepository, setTab: (String) -> Unit, open: (Listing) -> Unit, search: () -> Unit, publish: () -> Unit, profile: () -> Unit, chats: () -> Unit) {
+fun HomeScreen(uid: String, p: UserProfile, tab: String, repo: SupabaseRepository, setTab: (String) -> Unit, open: (Listing) -> Unit, search: () -> Unit, publish: () -> Unit, profile: () -> Unit, chats: () -> Unit) {
     var listings by remember(tab, p.country) { mutableStateOf<List<Listing>>(emptyList()) }
     var loading by remember(tab, p.country) { mutableStateOf(true) }
     var error by remember(tab, p.country) { mutableStateOf("") }
@@ -440,7 +421,7 @@ fun ListingCard(item: Listing, open: (Listing) -> Unit) {
 }
 
 @Composable
-fun SearchScreen(uid: String, p: UserProfile, repo: FirebaseRepository, open: (Listing) -> Unit) {
+fun SearchScreen(uid: String, p: UserProfile, repo: SupabaseRepository, open: (Listing) -> Unit) {
     var mode by remember { mutableStateOf("rent") }
     var type by remember { mutableStateOf("") }
     var city by remember { mutableStateOf("") }
@@ -471,7 +452,7 @@ fun SearchScreen(uid: String, p: UserProfile, repo: FirebaseRepository, open: (L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ListingDetail(uid: String, item: Listing, repo: FirebaseRepository, back: () -> Unit, owner: () -> Unit, openChat: () -> Unit) {
+fun ListingDetail(uid: String, item: Listing, repo: SupabaseRepository, back: () -> Unit, owner: () -> Unit, openChat: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var favorite by remember { mutableStateOf(false) }
@@ -497,7 +478,7 @@ fun ListingDetail(uid: String, item: Listing, repo: FirebaseRepository, back: ()
                 if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
                 OutlinedButton(owner, Modifier.fillMaxWidth().height(50.dp)) { Icon(Icons.Default.Person, null); Spacer(Modifier.width(6.dp)); Text("Voir le profil") }
                 Button({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(wa(item.ownerCountryCode, item.ownerPhone)))) }, Modifier.fillMaxWidth().height(52.dp)) { Icon(Icons.Default.Phone, null); Spacer(Modifier.width(6.dp)); Text("Contacter sur WhatsApp") }
-                Button({ val chatId = listOf(uid, item.ownerId).sorted().joinToString("_") + "_${item.id}"; scope.launch { runCatching { repo.sendMessage(chatId, item.id, item.country, listOf(uid, item.ownerId), uid, "Bonjour, votre annonce m'intéresse.") }.onFailure { error = readableError(it) } }; openChat() }, Modifier.fillMaxWidth().height(52.dp)) { Icon(Icons.Default.Chat, null); Spacer(Modifier.width(6.dp)); Text("Démarrer une discussion") }
+                Button({ val chatId = java.util.UUID.nameUUIDFromBytes("${listOf(uid, item.ownerId).sorted().joinToString("_")}_${item.id}".toByteArray()).toString(); scope.launch { runCatching { repo.sendMessage(chatId, item.id, item.country, listOf(uid, item.ownerId), uid, "Bonjour, votre annonce m'intéresse.") }.onFailure { error = readableError(it) } }; openChat() }, Modifier.fillMaxWidth().height(52.dp)) { Icon(Icons.Default.Chat, null); Spacer(Modifier.width(6.dp)); Text("Démarrer une discussion") }
                 TextButton({ report = true }) { Icon(Icons.Default.Flag, null); Spacer(Modifier.width(4.dp)); Text("Signaler cette annonce") }
             }
         }
@@ -509,7 +490,7 @@ fun ListingDetail(uid: String, item: Listing, repo: FirebaseRepository, back: ()
 fun LazyRowPhotos(urls: List<String>) = LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(8.dp)) { itemsIndexed(urls.take(4)) { _, url -> AsyncImage(url, "Photo du bien", Modifier.size(285.dp).clip(RoundedCornerShape(18.dp)), contentScale = ContentScale.Crop) } }
 
 @Composable
-fun PublishScreen(uid: String, p: UserProfile, repo: FirebaseRepository, initialMode: String = "", done: () -> Unit) {
+fun PublishScreen(uid: String, p: UserProfile, repo: SupabaseRepository, initialMode: String = "", done: () -> Unit) {
     var mode by remember { mutableStateOf(initialMode) }
     var type by remember { mutableStateOf("") }
     var price by remember { mutableStateOf("") }
@@ -534,13 +515,13 @@ fun PublishScreen(uid: String, p: UserProfile, repo: FirebaseRepository, initial
             OutlinedTextField(desc, { desc = it.take(4000) }, label = { Text("Description : quartier, prix négociable, conditions…") }, modifier = Modifier.fillMaxWidth().height(145.dp))
             DropdownField(relationship.ifBlank { "Votre relation avec le bien" }, Data.relationships) { relationship = it }
             if (msg.isNotBlank()) Text(msg, color = MaterialTheme.colorScheme.error)
-            Button({ scope.launch { busy = true; msg = ""; try { val urls = repo.uploadUris(uid, "listingPhotos", uris, 4); repo.publishListing(mapOf("mode" to mode, "propertyType" to type, "photoUrls" to urls, "price" to (price.toLongOrNull() ?: 0L), "depositMonths" to (deposit.toLongOrNull() ?: 0L), "description" to desc, "relationship" to relationship)); done() } catch (e: Exception) { msg = readableError(e) } finally { busy = false } } }, Modifier.fillMaxWidth().height(52.dp), enabled = type.isNotBlank() && (price.toLongOrNull() ?: 0) > 0 && relationship.isNotBlank() && !busy) { if (busy) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp)) else Text("Mettre en ligne") }
+            Button({ scope.launch { busy = true; msg = ""; try { val urls = repo.uploadUris(uid, "listing-photos", uris, 4); repo.publishListing(mapOf("p_city" to p.city, "p_mode" to mode, "p_property_type" to type, "p_photo_urls" to org.json.JSONArray(urls), "p_price" to (price.toLongOrNull() ?: 0L), "p_deposit_months" to (deposit.toLongOrNull() ?: 0L), "p_description" to desc, "p_relationship" to relationship)); done() } catch (e: Exception) { msg = readableError(e) } finally { busy = false } } }, Modifier.fillMaxWidth().height(52.dp), enabled = type.isNotBlank() && (price.toLongOrNull() ?: 0) > 0 && relationship.isNotBlank() && !busy) { if (busy) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp)) else Text("Mettre en ligne") }
         }
     }
 }
 
 @Composable
-fun ProfileScreen(uid: String, p: UserProfile, agency: Agency?, repo: FirebaseRepository, logout: () -> Unit, sell: () -> Unit, rent: () -> Unit, createAgency: () -> Unit, myListings: () -> Unit, cert: () -> Unit, agencyPage: () -> Unit) {
+fun ProfileScreen(uid: String, p: UserProfile, agency: Agency?, repo: SupabaseRepository, logout: () -> Unit, sell: () -> Unit, rent: () -> Unit, createAgency: () -> Unit, myListings: () -> Unit, cert: () -> Unit, agencyPage: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showDelete by remember { mutableStateOf(false) }
@@ -573,7 +554,7 @@ fun ProfileScreen(uid: String, p: UserProfile, agency: Agency?, repo: FirebaseRe
 }
 
 @Composable
-fun AgencyCreateScreen(uid: String, p: UserProfile, repo: FirebaseRepository, done: () -> Unit) {
+fun AgencyCreateScreen(uid: String, p: UserProfile, repo: SupabaseRepository, done: () -> Unit) {
     var name by remember { mutableStateOf("") }; var address by remember { mutableStateOf("") }; var email by remember { mutableStateOf("") }; var logo by remember { mutableStateOf<Uri?>(null) }; var busy by remember { mutableStateOf(false) }; var error by remember { mutableStateOf("") }; val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { logo = it }; val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize().background(Light).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Créer mon agence", style = MaterialTheme.typography.headlineMedium, color = Navy)
@@ -583,13 +564,13 @@ fun AgencyCreateScreen(uid: String, p: UserProfile, repo: FirebaseRepository, do
         OutlinedTextField(email, { email = it.take(120) }, label = { Text("Email de l’agence *") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
         OutlinedButton({ picker.launch("image/*") }, Modifier.fillMaxWidth().height(50.dp)) { Icon(Icons.Default.Image, null); Spacer(Modifier.width(6.dp)); Text(if (logo == null) "Logo (facultatif)" else "Logo sélectionné") }
         if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.error)
-        Button({ scope.launch { busy = true; try { val logoUrl = logo?.let { repo.uploadUris(uid, "agencyLogos", listOf(it), 1).first() } ?: ""; repo.createAgency(mapOf("name" to name.trim(), "address" to address.trim(), "email" to email.trim(), "logoUrl" to logoUrl)); done() } catch (e: Exception) { error = readableError(e) } finally { busy = false } } }, Modifier.fillMaxWidth().height(52.dp), enabled = name.isNotBlank() && address.isNotBlank() && email.contains("@") && !busy) { if (busy) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp)) else Text("Créer l’agence") }
+        Button({ scope.launch { busy = true; try { val logoUrl = logo?.let { repo.uploadUris(uid, "agency-logos", listOf(it), 1).first() } ?: ""; repo.createAgency(mapOf("owner_id" to uid, "name" to name.trim(), "address" to address.trim(), "email" to email.trim(), "logo_url" to logoUrl)); done() } catch (e: Exception) { error = readableError(e) } finally { busy = false } } }, Modifier.fillMaxWidth().height(52.dp), enabled = name.isNotBlank() && address.isNotBlank() && email.contains("@") && !busy) { if (busy) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp)) else Text("Créer l’agence") }
         TextButton(done) { Text("Annuler") }
     }
 }
 
 @Composable
-fun AgencyScreen(uid: String, repo: FirebaseRepository, back: () -> Unit) {
+fun AgencyScreen(uid: String, repo: SupabaseRepository, back: () -> Unit) {
     var agency by remember { mutableStateOf<Agency?>(null) }; var listings by remember { mutableStateOf<List<Listing>>(emptyList()) }; var error by remember { mutableStateOf("") }
     LaunchedEffect(Unit) { try { agency = repo.getAgency(uid); listings = repo.getMyListings(uid) } catch (e: Exception) { error = readableError(e) } }
     if (agency == null && error.isBlank()) return LoadingScreen("Chargement de l’agence…")
@@ -605,7 +586,7 @@ fun AgencyScreen(uid: String, repo: FirebaseRepository, back: () -> Unit) {
 }
 
 @Composable
-fun OwnerProfileScreen(uid: String, repo: FirebaseRepository, back: () -> Unit) {
+fun OwnerProfileScreen(uid: String, repo: SupabaseRepository, back: () -> Unit) {
     var p by remember { mutableStateOf<UserProfile?>(null) }; var a by remember { mutableStateOf<Agency?>(null) }; var listings by remember { mutableStateOf<List<Listing>>(emptyList()) }; var error by remember { mutableStateOf("") }
     LaunchedEffect(uid) { try { p = repo.getOwner(uid); a = repo.getOwnerAgency(uid); listings = repo.getMyListings(uid) } catch (e: Exception) { error = readableError(e) } }
     if (p == null && error.isBlank()) return LoadingScreen("Chargement du profil…")
@@ -617,7 +598,7 @@ fun OwnerProfileScreen(uid: String, repo: FirebaseRepository, back: () -> Unit) 
 }
 
 @Composable
-fun MyListingsScreen(uid: String, repo: FirebaseRepository, done: () -> Unit) {
+fun MyListingsScreen(uid: String, repo: SupabaseRepository, done: () -> Unit) {
     var list by remember { mutableStateOf<List<Listing>>(emptyList()) }; var error by remember { mutableStateOf("") }; val scope = rememberCoroutineScope()
     fun refresh() { scope.launch { try { list = repo.getMyListings(uid); error = "" } catch (e: Exception) { error = readableError(e) } } }
     LaunchedEffect(Unit) { refresh() }
@@ -632,13 +613,13 @@ fun MyListingsScreen(uid: String, repo: FirebaseRepository, done: () -> Unit) {
 }
 
 @Composable
-fun CertificationScreen(uid: String, agency: Agency?, repo: FirebaseRepository, done: () -> Unit) {
+fun CertificationScreen(uid: String, agency: Agency?, repo: SupabaseRepository, done: () -> Unit) {
     var uris by remember { mutableStateOf<List<Uri>>(emptyList()) }; var busy by remember { mutableStateOf(false) }; var msg by remember { mutableStateOf("") }; val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris = it.take(2) }; val context = LocalContext.current; val scope = rememberCoroutineScope()
     Column(Modifier.fillMaxSize().background(Light).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Certification de l’agence", style = MaterialTheme.typography.headlineMedium, color = Navy)
-        Text("Envoyez le recto et le verso de la pièce d’identité du propriétaire. Les documents sont protégés dans Firebase Storage et la validation est faite avant l’activation du badge.", color = Muted)
+        Text("Envoyez le recto et le verso de la pièce d’identité du propriétaire. Les documents sont protégés dans Supabase Storage et la validation est faite avant l’activation du badge.", color = Muted)
         OutlinedButton({ picker.launch("image/*") }, Modifier.fillMaxWidth().height(50.dp)) { Icon(Icons.Default.Badge, null); Spacer(Modifier.width(6.dp)); Text("Ajouter recto + verso (${uris.size}/2)") }
-        if (uris.size == 2) Button({ scope.launch { busy = true; msg = ""; try { val urls = repo.uploadUris(uid, "agencyVerification", uris, 2); repo.submitCertification(mapOf("frontUrl" to urls[0], "backUrl" to urls[1])); val pay = repo.createPayment("agency_certification"); context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pay))) } catch (e: Exception) { msg = readableError(e) } finally { busy = false } } }, Modifier.fillMaxWidth().height(52.dp), enabled = !busy) { if (busy) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp)) else Text("Envoyer et payer 2 000 FCFA / mois") }
+        if (uris.size == 2) Button({ scope.launch { busy = true; msg = ""; try { val urls = repo.uploadUris(uid, "agency-verification", uris, 2); repo.submitCertification(urls[0], urls[1]); val pay = repo.createPayment("agency_certification"); context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(pay))) } catch (e: Exception) { msg = readableError(e) } finally { busy = false } } }, Modifier.fillMaxWidth().height(52.dp), enabled = !busy) { if (busy) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp)) else Text("Envoyer et payer 2 000 FCFA / mois") }
         Text("Après paiement, la demande doit être validée avant activation du badge. Le renouvellement est mensuel.", color = Muted)
         if (agency?.badgeActive() == true) Text("✓ Votre badge est actif jusqu’au ${agency.certificationExpiresAt}", color = Orange, fontWeight = FontWeight.Bold)
         if (msg.isNotBlank()) Text(msg, color = MaterialTheme.colorScheme.error)
@@ -647,7 +628,7 @@ fun CertificationScreen(uid: String, agency: Agency?, repo: FirebaseRepository, 
 }
 
 @Composable
-fun ChatsScreen(uid: String, repo: FirebaseRepository, open: (Listing) -> Unit) {
+fun ChatsScreen(uid: String, repo: SupabaseRepository, open: (Listing) -> Unit) {
     var chats by remember { mutableStateOf<List<ChatSummary>>(emptyList()) }; var error by remember { mutableStateOf("") }; val scope = rememberCoroutineScope()
     LaunchedEffect(Unit) { try { chats = repo.getChats(uid) } catch (e: Exception) { error = readableError(e) } }
     Column(Modifier.fillMaxSize().background(Light).padding(16.dp)) {
@@ -658,8 +639,8 @@ fun ChatsScreen(uid: String, repo: FirebaseRepository, open: (Listing) -> Unit) 
 }
 
 @Composable
-fun ChatDetailScreen(uid: String, item: Listing, repo: FirebaseRepository, back: () -> Unit) {
-    val chatId = listOf(uid, item.ownerId).sorted().joinToString("_") + "_${item.id}"
+fun ChatDetailScreen(uid: String, item: Listing, repo: SupabaseRepository, back: () -> Unit) {
+    val chatId = java.util.UUID.nameUUIDFromBytes("${listOf(uid, item.ownerId).sorted().joinToString("_")}_${item.id}".toByteArray()).toString()
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }; var text by remember { mutableStateOf("") }; var error by remember { mutableStateOf("") }; val scope = rememberCoroutineScope()
     LaunchedEffect(chatId) { try { messages = repo.getMessages(chatId) } catch (e: Exception) { error = readableError(e) } }
     Column(Modifier.fillMaxSize().background(Light)) {

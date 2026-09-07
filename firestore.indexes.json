@@ -1,4 +1,0 @@
-{"indexes":[
-  {"collectionGroup":"listings","queryScope":"COLLECTION","fields":[{"fieldPath":"country","order":"ASCENDING"},{"fieldPath":"active","order":"ASCENDING"},{"fieldPath":"mode","order":"ASCENDING"},{"fieldPath":"city","order":"ASCENDING"},{"fieldPath":"propertyType","order":"ASCENDING"},{"fieldPath":"price","order":"ASCENDING"}]},
-  {"collectionGroup":"savedSearches","queryScope":"COLLECTION","fields":[{"fieldPath":"country","order":"ASCENDING"},{"fieldPath":"active","order":"ASCENDING"}]}
-],"fieldOverrides":[]}
