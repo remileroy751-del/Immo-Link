@@ -7,7 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -64,7 +64,7 @@ private fun readableError(error: Throwable): String {
     }
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
     private var paymentCallback: ((String, String) -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -106,7 +106,9 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         runCatching {
             Kkiapay.get().setListener { status, transactionId ->
-                paymentCallback?.invoke(status.name, transactionId)
+                if (!transactionId.isNullOrBlank()) {
+                    paymentCallback?.invoke(status.name, transactionId)
+                }
                 paymentCallback = null
             }
         }
