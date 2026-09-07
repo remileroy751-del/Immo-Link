@@ -103,8 +103,13 @@ class SupabaseRepository(private val context: Context) {
 
     suspend fun publishListing(data: Map<String, Any?>): Listing {
         val body = JSONObject(data.filterValues { it != null }).toString()
-        val row = JSONArray(request("POST", "/rest/v1/rpc/publish_listing", body)).optJSONObject(0)
-            ?: throw IllegalStateException("Annonce non créée")
+        val response = request("POST", "/rest/v1/rpc/publish_listing", body)
+        // PostgreSQL functions returning a composite row are returned by PostgREST
+        // as a JSON object. Some configurations/wrappers may return a one-item array.
+        // Accept both forms so publication never fails merely because of the response shape.
+        val row = runCatching { JSONObject(response) }.getOrNull()
+            ?: runCatching { JSONArray(response).optJSONObject(0) }.getOrNull()
+            ?: throw IllegalStateException("Annonce non créée : réponse Supabase invalide")
         return listing(row)
     }
 
