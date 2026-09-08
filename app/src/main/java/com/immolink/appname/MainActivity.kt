@@ -69,13 +69,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        runCatching {
-            Kkiapay.init(
-                applicationContext,
-                KkiapayConfig.PUBLIC_KEY,
-                SdkConfig(themeColor = R.color.colorPrimary, enableSandbox = false)
-            )
-        }
+        // Kkiapay.init(...) est désormais appelé dans CrashHandlerApp.onCreate(),
+        // conformément à la documentation officielle du SDK (initialisation requise
+        // au niveau de la classe Application, pas de l'Activity).
         setContent { ImmoLinkApp() }
     }
 
