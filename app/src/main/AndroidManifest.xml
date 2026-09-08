@@ -2,6 +2,7 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
+        android:name=".CrashHandlerApp"
         android:theme="@style/Theme.ImmoLink"
         android:label="ImmoLink"
         tools:replace="android:label"
@@ -15,5 +16,9 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <activity
+            android:name=".CrashReportActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
     </application>
 </manifest>
